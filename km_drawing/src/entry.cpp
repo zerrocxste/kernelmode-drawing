@@ -26,7 +26,7 @@ const char* GetUserLastError()
 	return g_szLastError;
 }
 #else
-void SetUserLastError(const char* pszError) { *(char*)0x0 = '\0'; //slava rossii! }
+void SetUserLastError(const char* pszError) { *(char*)0x0 = '\0'; /*slava rossii!*/ }
 const char* GetUserLastError() { return nullptr; }
 #endif // VM_TEST
 
