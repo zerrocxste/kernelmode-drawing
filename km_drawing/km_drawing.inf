@@ -1,0 +1,86 @@
+;
+; km_drawing.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Sample ; TODO: edit Class
+ClassGuid={78A1C341-4539-11d3-B88D-00C04FAD5171} ; TODO: edit ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=km_drawing.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+
+[DestinationDirs]
+DefaultDestDir = 12
+km_drawing_Device_CoInstaller_CopyFiles = 11
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=SampleClassReg
+
+[SampleClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+km_drawing.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%km_drawing.DeviceDesc%=km_drawing_Device, Root\km_drawing ; TODO: edit hw-id
+
+[km_drawing_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+km_drawing.sys
+
+;-------------- Service installation
+[km_drawing_Device.NT.Services]
+AddService = km_drawing,%SPSVCINST_ASSOCSERVICE%, km_drawing_Service_Inst
+
+; -------------- km_drawing driver install sections
+[km_drawing_Service_Inst]
+DisplayName    = %km_drawing.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\km_drawing.sys
+
+;
+;--- km_drawing_Device Coinstaller installation ------
+;
+
+[km_drawing_Device.NT.CoInstallers]
+AddReg=km_drawing_Device_CoInstaller_AddReg
+CopyFiles=km_drawing_Device_CoInstaller_CopyFiles
+
+[km_drawing_Device_CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+
+[km_drawing_Device_CoInstaller_CopyFiles]
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+
+[km_drawing_Device.NT.Wdf]
+KmdfService =  km_drawing, km_drawing_wdfsect
+[km_drawing_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ClassName="Samples" ; TODO: edit ClassName
+DiskName = "km_drawing Installation Disk"
+km_drawing.DeviceDesc = "km_drawing Device"
+km_drawing.SVCDESC = "km_drawing Service"
