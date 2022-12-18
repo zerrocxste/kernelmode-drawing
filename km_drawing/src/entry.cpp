@@ -26,7 +26,7 @@ const char* GetUserLastError()
 	return g_szLastError;
 }
 #else
-void SetUserLastError(const char* pszError) { *(char*)0x0 = '\0'; //slava rossii! }
+void SetUserLastError(const char* pszError) { KeBugCheck(0xAB0BA); }
 const char* GetUserLastError() { return nullptr; }
 #endif // VM_TEST
 
@@ -114,32 +114,6 @@ struct BasicModuleInformation
 		this->End = (void*)((DWORD_PTR)this->Base + this->Size);
 	}
 };
-
-DWORD_PTR compare_memory(const char* pattern, const char* mask, DWORD_PTR base, DWORD32 size, const int patternLength, DWORD32 speed = 0x1)
-{
-	for (DWORD32 i = 0; i < size - patternLength; i += speed)
-	{
-		bool found = true;
-		for (int j = 0; j < patternLength; j++)
-		{
-			if (mask[j] == '?')
-				continue;
-
-			if (pattern[j] != *(char*)(base + i + j))
-			{
-				found = false;
-				break;
-			}
-		}
-
-		if (found)
-		{
-			return base + i;
-		}
-	}
-
-	return NULL;
-}
 
 bool FindSystemModule(const char* pszLibName, BasicModuleInformation* pBMI)
 {
@@ -326,6 +300,68 @@ bool FindDrawingFunction()
 	return true;
 }
 
+bool KM_Hook(void* pFunction, void* pProxyFunction, void** pGateFunction, int iActualGateInstructionLength)
+{
+	const int ABSOLUTE_JMP_OPCODE_OFFSET = 6;
+
+	unsigned char bTrap[] = {
+		0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /*JMP 0xFFFFFFFFFFFFFFFF*/
+	};
+	*(void**)&bTrap[ABSOLUTE_JMP_OPCODE_OFFSET] = pProxyFunction;
+
+	unsigned char bSrcTrap[128]{};
+	memcpy(bSrcTrap, pFunction, iActualGateInstructionLength);
+	memcpy(bSrcTrap + iActualGateInstructionLength, bTrap, sizeof(bTrap));
+	*(void**)&bSrcTrap[iActualGateInstructionLength + ABSOLUTE_JMP_OPCODE_OFFSET] = (void*)((__int64)pFunction + iActualGateInstructionLength);
+
+	auto pJmpMirror = ExAllocatePoolWithTag(
+		POOL_TYPE::NonPagedPool,
+		iActualGateInstructionLength + sizeof(bTrap) /* idk, pool size actually min size is 4096 like VirtualAlloc? */,
+		'TRAP'
+	);
+
+	if (!pJmpMirror)
+	{
+		SetUserLastError("ExAllocatePoolWithTag == 0");
+		return false;
+	}
+
+	auto pMDL = IoAllocateMdl(pFunction, sizeof(bTrap), FALSE, FALSE, nullptr);
+
+	if (!pMDL)
+	{
+		SetUserLastError("IoAllocateMdl == 0");
+		return false;
+	}
+
+	MmProbeAndLockPages(pMDL, MODE::KernelMode, LOCK_OPERATION::IoReadAccess);
+
+	auto pSpecifyCopy = MmMapLockedPagesSpecifyCache(pMDL, MODE::KernelMode, MEMORY_CACHING_TYPE::MmNonCached, nullptr, FALSE, MM_PAGE_PRIORITY::HighPagePriority);
+
+	if (!pSpecifyCopy)
+	{
+		SetUserLastError("pSpecifyCopy == 0");
+		return false;
+	}
+
+	if (!NT_SUCCESS(MmProtectMdlSystemAddress(pMDL, PAGE_EXECUTE_READWRITE)))
+	{
+		SetUserLastError("MmProtectMdlSystemAddress != 0");
+		return false;
+	}
+
+	memcpy(pJmpMirror, bSrcTrap, iActualGateInstructionLength + sizeof(bTrap));
+	*pGateFunction = pJmpMirror;
+
+	memcpy(pSpecifyCopy, bTrap, sizeof(bTrap));
+
+	MmUnmapLockedPages(pSpecifyCopy, pMDL);
+	MmUnlockPages(pMDL);
+	IoFreeMdl(pMDL);
+
+	return true;
+}
+
 bool CreateCommunicationHook_NtGdiGetTextExtent()
 {
 	BasicModuleInformation CurrentModule{};
@@ -343,68 +379,7 @@ bool CreateCommunicationHook_NtGdiGetTextExtent()
 		return false;
 	}
 
-	const int ABSOLUTE_JMP_OPCODE_OFFSET = 6;
-
-	unsigned char bDestTrap[] = { 
-		0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /*JMP 0xFFFFFFFFFFFFFFFF*/ 
-		0x90, 0x90, 0x90, 0x90, 0x90 //nop plug
-	};
-	*(void**)&bDestTrap[ABSOLUTE_JMP_OPCODE_OFFSET] = NtGdiGetTextExtent_proxy;
-
-	unsigned char bSrcTrap[] = {
-		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, //Original code bytes
-		0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /*JMP 0xFFFFFFFFFFFFFFFF*/
-	};
-	memcpy(bSrcTrap, pFunction, 19);
-	*(void**)&bSrcTrap[19 + ABSOLUTE_JMP_OPCODE_OFFSET] = (void*)((__int64)pFunction + sizeof(bDestTrap) /*skip { jmp N | nop's }*/);
-
-	auto pJmpMirror = ExAllocatePoolWithTag(
-		POOL_TYPE::NonPagedPool, 
-		sizeof(bSrcTrap)/* idk, pool size actually min size is 4096 like VirtualAlloc? */, 
-		'TRAP'
-	);
-
-	if (!pJmpMirror)
-	{
-		SetUserLastError("ExAllocatePoolWithTag == 0");
-		return false;
-	}
-
-	memcpy(pJmpMirror, bSrcTrap, sizeof(bSrcTrap));
-	pfNtGdiGetTextExtent_gate = (decltype(pfNtGdiGetTextExtent_gate))pJmpMirror;
-	//pfNtGdiGetTextExtent_gate(0, 0, 0, 0, 0); test call
-
-	auto pMdl = IoAllocateMdl(pFunction, sizeof(bDestTrap), FALSE, FALSE, 0);
-
-	if (!pMdl)
-	{
-		SetUserLastError("Mdl == 0");
-		return false;
-	}
-
-	MmProbeAndLockPages(pMdl, MODE::KernelMode, LOCK_OPERATION::IoReadAccess);
-
-	auto pSpecifyCopy = MmMapLockedPagesSpecifyCache(pMdl, MODE::KernelMode, MEMORY_CACHING_TYPE::MmNonCached, 0, FALSE, MM_PAGE_PRIORITY::HighPagePriority);
-
-	if (!pSpecifyCopy)
-	{
-		SetUserLastError("MmMapLockedPagesSpecifyCache == 0");
-		return false;
-	}
-
-	if (!NT_SUCCESS(MmProtectMdlSystemAddress(pMdl, PAGE_EXECUTE_READWRITE)))
-	{
-		SetUserLastError("(NTSTATUS) MmProtectMdlSystemAddress != 0");
-		return false;
-	}
-
-	memcpy(pSpecifyCopy, bDestTrap, sizeof(bDestTrap));
-
-	MmUnmapLockedPages(pSpecifyCopy, pMdl);
-	MmUnlockPages(pMdl);
-	IoFreeMdl(pMdl);
-
-	return true;
+	return KM_Hook(pFunction, NtGdiGetTextExtent_proxy, (void**)&pfNtGdiGetTextExtent_gate, 19);
 }
 
 extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
